@@ -1,0 +1,115 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+from collections import defaultdict
+from scipy.spatial.distance import cdist
+import os
+
+os.environ["SPOTIFY_CLIENT_ID"] = "ef4dae9c17d74acd854ea7477518c33a"
+os.environ["SPOTIFY_CLIENT_SECRET"] = "b52042f78ba0402fbaa08d2153c4c566"
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
+from collections import defaultdict
+
+sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=os.environ["SPOTIFY_CLIENT_ID"],
+                                                           client_secret=os.environ["SPOTIFY_CLIENT_SECRET"]))
+
+def find_song(name, year):
+    song_data = defaultdict()
+    try:
+        results = sp.search(q= 'track: {} year: {}'.format(name,year), limit=1)
+        if results['tracks']['items'] == []:
+            return None
+    
+        results = results['tracks']['items'][0]
+        track_id = results['id']
+        audio_features = sp.audio_features(track_id)[0]
+    
+        song_data['name'] = [name]
+        song_data['year'] = [year]
+        song_data['explicit'] = [int(results['explicit'])]
+        song_data['duration_ms'] = [results['duration_ms']]
+        song_data['popularity'] = [results['popularity']]
+    
+        for key, value in audio_features.items():
+            song_data[key] = value
+    
+        return pd.DataFrame(song_data)
+    except Exception as e:
+        print(f"Error fetching {name}: {e}")
+        return None
+
+# Load dataset
+data = pd.read_csv('your_dataset.csv')
+
+number_cols = ['valence', 'year', 'acousticness', 'danceability', 'duration_ms',
+               'energy', 'explicit', 'instrumentalness', 'key', 'liveness',
+               'loudness', 'mode', 'popularity', 'speechiness', 'tempo']
+
+# Helper Functions
+def flatten_dict_list(dict_list):
+    flattened_dict = defaultdict(list)
+    for key in dict_list[0].keys():
+        for dictionary in dict_list:
+            flattened_dict[key].append(dictionary[key])
+    return flattened_dict
+
+def get_song_data(song, spotify_data):
+    try:
+        song_data = spotify_data[(spotify_data['name'] == song['name']) &
+                                 (spotify_data['year'] == song['year'])].iloc[0]
+        return song_data
+    except IndexError:
+        return None
+
+def get_mean_vector(song_list, spotify_data):
+    song_vectors = []
+    for song in song_list:
+        song_data = get_song_data(song, spotify_data)
+        if song_data is None:
+            continue
+        song_vectors.append(song_data[number_cols].values)
+    return np.mean(np.array(song_vectors), axis=0)
+
+def recommend_songs(song_list, spotify_data, n_songs=10):
+    metadata_cols = ['name', 'year', 'artists']
+    song_dict = flatten_dict_list(song_list)
+    song_center = get_mean_vector(song_list, spotify_data)
+    scaled_data = spotify_data[number_cols].values
+    distances = cdist([song_center], scaled_data, 'cosine')
+    index = np.argsort(distances)[:, :n_songs][0]
+    rec_songs = spotify_data.iloc[index]
+    rec_songs = rec_songs[~rec_songs['name'].isin(song_dict['name'])]
+    return rec_songs[metadata_cols]
+
+# Streamlit UI
+st.title("🎵 Music Recommendation App")
+
+st.write("Select songs from the dataset or enter manually")
+
+# User selects songs from dataset
+selected_songs = st.multiselect("Select songs from dataset", data['name'].unique())
+
+# User enters song name and year manually
+manual_name = st.text_input("Enter Song Name")
+manual_year = st.number_input("Enter Year", min_value=1900, max_value=2025, step=1)
+
+song_list = []
+
+# Add selected songs from dataset
+for name in selected_songs:
+    year = int(data[data['name'] == name]['year'].iloc[0])
+    song_list.append({'name': name, 'year': year})
+
+# Add manually entered song
+if manual_name and manual_year:
+    song_list.append({'name': manual_name, 'year': int(manual_year)})
+
+# Button to get recommendations
+if st.button("Recommend Songs"):
+    if len(song_list) > 0:
+        recommendations = recommend_songs(song_list, data, n_songs=10)
+        st.subheader("Recommended Songs")
+        st.table(recommendations)
+    else:
+        st.warning("Please add at least one song to get recommendations.")
